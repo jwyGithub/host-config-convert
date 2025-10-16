@@ -98,7 +98,7 @@ yarn build
     - 格式：`IP地址 域名`，每行一个
     - 示例：
         ```
-        117.80.117.48 coralsea.ctseelink.cn
+        117.80.117.48 baidu.com
         192.168.1.1 example.com
         ```
 
