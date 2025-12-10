@@ -78,21 +78,39 @@ const PLATFORM_RULES = {
 export function useHostConverter() {
     const [state, dispatch] = useReducer(hostConverterReducer, initialState);
 
-    // 解析host配置输入
+    // 解析host配置输入（增强版：支持注释和非host行）
     const parseHostInput = useCallback((input: string) => {
-        const lines = input.trim().split('\n');
-        const results: Array<{ ip: string; host: string }> = [];
+        const lines = input.split('\n');
+        const results: Array<{ ip: string; host: string; isValid: boolean; originalLine: string }> = [];
+
+        // IP地址正则：支持IPv4和IPv6
+        const ipv4Regex = /^(\d{1,3}\.){3}\d{1,3}$/;
+        const ipv6Regex = /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/;
 
         for (const line of lines) {
             const trimmedLine = line.trim();
-            if (trimmedLine) {
-                const parts = trimmedLine.split(/\s+/);
-                if (parts.length >= 2) {
-                    const ip = parts[0];
-                    const host = parts[1];
-                    results.push({ ip, host });
+
+            // 空行直接保留
+            if (!trimmedLine) {
+                results.push({ ip: '', host: '', isValid: false, originalLine: line });
+                continue;
+            }
+
+            // 尝试解析为host配置
+            const parts = trimmedLine.split(/\s+/);
+            if (parts.length >= 2) {
+                const ip = parts[0];
+                const host = parts[1];
+
+                // 验证IP格式
+                if (ipv4Regex.test(ip) || ipv6Regex.test(ip)) {
+                    results.push({ ip, host, isValid: true, originalLine: line });
+                    continue;
                 }
             }
+
+            // 不符合host规则，原样保留
+            results.push({ ip: '', host: '', isValid: false, originalLine: line });
         }
         return results;
     }, []);
@@ -102,7 +120,7 @@ export function useHostConverter() {
         return rule.replace(/\$\{ip\}/g, ip).replace(/\$\{host\}/g, host);
     }, []);
 
-    // 转换host配置
+    // 转换host配置（增强版：支持注释和非host行）
     const convertHostConfig = useCallback(
         (inputValue?: string) => {
             const currentInput = inputValue || state.inputText;
@@ -111,8 +129,11 @@ export function useHostConverter() {
                 return;
             }
 
-            const parsedHosts = parseHostInput(currentInput);
-            if (parsedHosts.length === 0) {
+            const parsedLines = parseHostInput(currentInput);
+
+            // 检查是否有有效的host行
+            const validHosts = parsedLines.filter(line => line.isValid);
+            if (validHosts.length === 0) {
                 dispatch({ type: 'SET_OUTPUT_TEXT', payload: '无法解析输入的host配置，请检查格式是否正确' });
                 return;
             }
@@ -127,23 +148,43 @@ export function useHostConverter() {
                 return;
             }
 
-            // 去重逻辑：基于host + ip的组合
-            let processedHosts = parsedHosts;
+            // 去重逻辑：基于host + ip的组合（只对有效的host行去重）
+            let processedLines = parsedLines;
             if (state.enableDeduplication) {
-                const uniqueMap = new Map<string, { ip: string; host: string }>();
-                parsedHosts.forEach(({ ip, host }) => {
-                    const key = `${host}:${ip}`;
-                    if (!uniqueMap.has(key)) {
-                        uniqueMap.set(key, { ip, host });
+                const uniqueMap = new Map<string, { ip: string; host: string; isValid: boolean; originalLine: string }>();
+                const seenKeys = new Set<string>();
+
+                processedLines = parsedLines.filter(line => {
+                    if (!line.isValid) {
+                        // 非host行直接保留
+                        return true;
                     }
+
+                    const key = `${line.host}:${line.ip}`;
+                    if (seenKeys.has(key)) {
+                        // 重复的host+ip组合，跳过
+                        return false;
+                    }
+
+                    seenKeys.add(key);
+                    return true;
                 });
-                processedHosts = Array.from(uniqueMap.values());
             }
 
-            const convertedLines = processedHosts.map(({ ip, host }) => applyRule(rule, ip, host));
+            // 转换每一行
+            const convertedLines = processedLines.map(line => {
+                if (line.isValid) {
+                    // 有效的host行，应用转换规则
+                    return applyRule(rule, line.ip, line.host);
+                } else {
+                    // 非host行（注释、空行等），原样输出
+                    return line.originalLine;
+                }
+            });
+
             dispatch({ type: 'SET_OUTPUT_TEXT', payload: convertedLines.join('\n') });
         },
-        [state.inputText, state.selectedPlatform, state.customRule, state.userRules, state.enableDeduplication]
+        [state.inputText, state.selectedPlatform, state.customRule, state.userRules, state.enableDeduplication, parseHostInput, applyRule]
     );
 
     // 复制到剪贴板
